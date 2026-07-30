@@ -2,23 +2,41 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+from datetime import datetime
 
 # Configuração da Página
 st.set_page_config(
-    page_title="Supervisório - Sismógrafo Píer 01",
-    page_icon="🌋",
-    layout="wide"
+    page_title="PGL 01- Sismógrafo",
+    page_icon="📡",
+    layout="wide",
+    initial_sidebar_state="collapsed"
 )
 
 # Atualização automática contínua
-st.fragment(run_every="5s")
+st.fragment(run_every="3s")
 
-st.title("🌋 Supervisório Sismógrafo - Píer 01")
-st.markdown("---")
+# Estilo para tema escuro e layout limpo similar ao Arduino Cloud
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #0e1117;
+        color: #ffffff;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 28px;
+        font-weight: bold;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Inicializar histórico na sessão
+if "historico" not in st.session_state:
+    st.session_state.historico = pd.DataFrame(columns=[
+        "Horário", "accX", "accY", "accZ", "gyroX", "gyroY", "gyroZ", "vibration", "temperatura"
+    ])
 
 # Função para buscar token e dados na API do Arduino Cloud
-@st.cache_data(ttl=3)
+@st.cache_data(ttl=2)
 def buscar_dados_arduino(client_id, client_secret, thing_id):
     try:
         token_url = "https://api2.arduino.cc/iot/v1/clients/token"
@@ -31,7 +49,6 @@ def buscar_dados_arduino(client_id, client_secret, thing_id):
         headers = {"Content-Type": "application/json"}
         
         token_res = requests.post(token_url, json=payload, headers=headers, timeout=10)
-        
         if token_res.status_code != 200:
             return None, f"Erro na Autenticação ({token_res.status_code})"
             
@@ -44,7 +61,6 @@ def buscar_dados_arduino(client_id, client_secret, thing_id):
         }
         
         data_res = requests.get(data_url, headers=auth_headers, timeout=10)
-        
         if data_res.status_code == 200:
             return data_res.json(), None
         else:
@@ -53,120 +69,109 @@ def buscar_dados_arduino(client_id, client_secret, thing_id):
     except Exception as e:
         return None, str(e)
 
-# Barra Lateral
+# Configurações na Barra Lateral
 st.sidebar.header("🔑 Credenciais da API")
 client_id = st.sidebar.text_input("Client ID", value=st.secrets.get("CLIENT_ID", ""), type="password")
 client_secret = st.sidebar.text_input("Client Secret", value=st.secrets.get("CLIENT_SECRET", ""), type="password")
 thing_id = st.sidebar.text_input("Thing ID", value="52bbfd4b-ec60-4bd8-b4ee-4533abee77e4")
 
-if st.sidebar.button("🔄 Atualizar Dados"):
-    st.cache_data.clear()
-
 if client_id and client_secret and thing_id:
     dados_json, erro = buscar_dados_arduino(client_id, client_secret, thing_id)
     
     if erro:
-        st.error(f"Não foi possível conectar com o Arduino Cloud: {erro}")
+        st.error(f"Erro na conexão: {erro}")
     elif dados_json:
         medidas = {item['name']: item['last_value'] for item in dados_json}
-        ultima_atualizacao = dados_json[0].get('value_updated_at', 'N/A')
         
-        st.caption(f"Última atualização registrada no servidor: **{ultima_atualizacao}**")
+        # Adiciona nova leitura ao histórico
+        nova_linha = {
+            "Horário": datetime.now().strftime("%H:%M:%S"),
+            "accX": medidas.get('accX', 0),
+            "accY": medidas.get('accY', 0),
+            "accZ": medidas.get('accZ', 0),
+            "gyroX": medidas.get('gyroX', 0),
+            "gyroY": medidas.get('gyroY', 0),
+            "gyroZ": medidas.get('gyroZ', 0),
+            "vibration": medidas.get('vibration', 0),
+            "temperatura": medidas.get('temperatura', 0)
+        }
+        
+        df_novo = pd.DataFrame([nova_linha])
+        st.session_state.historico = pd.concat([st.session_state.historico, df_novo], ignore_index=True).tail(30)
+        df_hist = st.session_state.historico
 
-        # --- CARTÕES DE KPI PRINCIPAIS ---
-        st.subheader("📌 Indicadores Principais")
-        col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+        # --- CABEÇALHO ---
+        st.title("PGL 01- Sismógrafo")
+        st.markdown("---")
+
+        # --- LINHA TOP: LOGO / CARTOES AMBIENTE & VIBRAÇÃO HISTÓRICO ---
+        c_top1, c_top2 = st.columns([1, 2])
         
-        col_kpi1.metric("Aceleração Z (Gravidade)", f"{medidas.get('accZ', 0):.2f} m/s²")
-        col_kpi2.metric("Temperatura Operacional", f"{medidas.get('temperatura', 0):.1f} °C")
-        col_kpi3.metric("Nível de Vibração", f"{medidas.get('vibration', 0):.2f}")
-        
-        reset_status = medidas.get('reset', False)
-        col_kpi4.metric("Status do Equipamento", "RESET ATIVO" if reset_status else "NORMAL")
+        with c_top1:
+            sub1, sub2, sub3 = st.columns(3)
+            sub1.metric("Redefinir online", "OFF" if not medidas.get('reset') else "ON")
+            sub2.metric("Temperatura Ambiente", f"{medidas.get('temperatura', 0):.1f} °C")
+            sub3.metric("Vibração", f"{medidas.get('vibration', 0):.1f}")
+
+        with c_top2:
+            fig_vib = px.line(df_hist, x="Horário", y="vibration", title="<b>Vibração (AO VIVO)</b>", color_discrete_sequence=['#ff4b4b'])
+            fig_vib.update_layout(height=180, margin=dict(l=10, r=10, t=30, b=10), template="plotly_dark")
+            st.plotly_chart(fig_vib, use_container_width=True)
 
         st.markdown("---")
 
-        # --- SEÇÃO DE GRÁFICOS ---
-        st.subheader("📈 Monitoramento Gráfico em Tempo Real")
-        
-        col_graf1, col_graf2 = st.columns(2)
+        # --- SEÇÃO PRINCIPAL: GIROSCÓPIO X ACELERÔMETRO ---
+        col_giro, col_acc = st.columns(2)
 
-        # GRÁFICO 1: Acelerômetro (Barras Verticais)
-        with col_graf1:
-            df_acc = pd.DataFrame({
-                'Eixo': ['Aceleração X', 'Aceleração Y', 'Aceleração Z'],
-                'Valor (m/s²)': [medidas.get('accX', 0), medidas.get('accY', 0), medidas.get('accZ', 0)]
-            })
+        # COLUNA 1: GIROSCÓPIO (Torção Estrutural)
+        with col_giro:
+            st.markdown("### Giroscópio - (Torção Estrutural)")
             
-            fig_acc = px.bar(
-                df_acc, 
-                x='Eixo', 
-                y='Valor (m/s²)', 
-                color='Eixo',
-                text_auto='.2f',
-                title="<b>Acelerômetro Triaxial (m/s²)</b>"
-            )
-            fig_acc.update_layout(showlegend=False, height=350)
-            st.plotly_chart(fig_acc, use_container_width=True)
+            # Giro X
+            g1_kpi, g1_chart = st.columns([1, 3])
+            g1_kpi.metric("GiroX - °/s", f"{medidas.get('gyroX', 0):.2e}")
+            fig_gx = px.line(df_hist, x="Horário", y="gyroX", color_discrete_sequence=['#2ecc71'])
+            fig_gx.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            g1_chart.plotly_chart(fig_gx, use_container_width=True)
 
-        # GRÁFICO 2: Giroscópio (Barras Horizontais)
-        with col_graf2:
-            df_gyro = pd.DataFrame({
-                'Eixo': ['Giro X', 'Giro Y', 'Giro Z'],
-                'Velocidade Angular (rad/s)': [medidas.get('gyroX', 0), medidas.get('gyroY', 0), medidas.get('gyroZ', 0)]
-            })
+            # Giro Y
+            g2_kpi, g2_chart = st.columns([1, 3])
+            g2_kpi.metric("GiroY - °/s", f"{medidas.get('gyroY', 0):.2e}")
+            fig_gy = px.line(df_hist, x="Horário", y="gyroY", color_discrete_sequence=['#3498db'])
+            fig_gy.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            g2_chart.plotly_chart(fig_gy, use_container_width=True)
+
+            # Giro Z
+            g3_kpi, g3_chart = st.columns([1, 3])
+            g3_kpi.metric("Giroscópio - °/s", f"{medidas.get('gyroZ', 0):.2e}")
+            fig_gz = px.line(df_hist, x="Horário", y="gyroZ", color_discrete_sequence=['#9b59b6'])
+            fig_gz.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            g3_chart.plotly_chart(fig_gz, use_container_width=True)
+
+        # COLUNA 2: ACELERÔMETRO (Inclinação e Impacto)
+        with col_acc:
+            st.markdown("### Acelerômetro - Inclinação e Impacto Lateral/Vertical")
             
-            fig_gyro = px.bar(
-                df_gyro, 
-                y='Eixo', 
-                x='Velocidade Angular (rad/s)', 
-                color='Eixo',
-                orientation='h',
-                text_auto='.3f',
-                title="<b>Giroscópio Triaxial (rad/s)</b>"
-            )
-            fig_gyro.update_layout(showlegend=False, height=350)
-            st.plotly_chart(fig_gyro, use_container_width=True)
+            # Acc X
+            a1_kpi, a1_chart = st.columns([1, 3])
+            a1_kpi.metric("AccX - m/s² (Inclinação)", f"{medidas.get('accX', 0):.3f}")
+            fig_ax = px.line(df_hist, x="Horário", y="accX", color_discrete_sequence=['#2ecc71'])
+            fig_ax.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            a1_chart.plotly_chart(fig_ax, use_container_width=True)
 
-        # GRÁFICO 3: Gauge/Velocímetro de Temperatura
-        col_graf3, col_graf4 = st.columns(2)
-        
-        with col_graf3:
-            temp_val = medidas.get('temperatura', 0)
-            fig_gauge = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=temp_val,
-                domain={'x': [0, 1], 'y': [0, 1]},
-                title={'text': "<b>Temperatura do Sensor (°C)</b>"},
-                gauge={
-                    'axis': {'range': [0, 60]},
-                    'bar': {'color': "#ff4b4b"},
-                    'steps': [
-                        {'range': [0, 30], 'color': "#1e3d59"},
-                        {'range': [30, 45], 'color': "#f5af19"},
-                        {'range': [45, 60], 'color': "#e65c00"}
-                    ],
-                }
-            ))
-            fig_gauge.update_layout(height=320)
-            st.plotly_chart(fig_gauge, use_container_width=True)
+            # Acc Y
+            a2_kpi, a2_chart = st.columns([1, 3])
+            a2_kpi.metric("AccY - m/s² (Inclinação)", f"{medidas.get('accY', 0):.3f}")
+            fig_ay = px.line(df_hist, x="Horário", y="accY", color_discrete_sequence=['#1abc9c'])
+            fig_ay.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            a2_chart.plotly_chart(fig_ay, use_container_width=True)
 
-        # GRÁFICO 4: Comparativo de Vibração x Temperatura
-        with col_graf4:
-            df_vib = pd.DataFrame({
-                'Parâmetro': ['Vibração Absoluta', 'Temperatura (°C)'],
-                'Valor': [medidas.get('vibration', 0), medidas.get('temperatura', 0)]
-            })
-            fig_vib = px.bar(
-                df_vib,
-                x='Parâmetro',
-                y='Valor',
-                color='Parâmetro',
-                text_auto='.2f',
-                title="<b>Status Operacional (Vibração & Temp)</b>"
-            )
-            fig_vib.update_layout(showlegend=False, height=320)
-            st.plotly_chart(fig_vib, use_container_width=True)
+            # Acc Z
+            a3_kpi, a3_chart = st.columns([1, 3])
+            a3_kpi.metric("AccZ - m/s² (Impacto Vertical)", f"{medidas.get('accZ', 0):.3f}")
+            fig_az = px.line(df_hist, x="Horário", y="accZ", color_discrete_sequence=['#8e44ad'])
+            fig_az.update_layout(height=160, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
+            a3_chart.plotly_chart(fig_az, use_container_width=True)
 
 else:
-    st.info("👈 Por favor, insira o **Client ID** e o **Client Secret** na barra lateral para carregar o supervisório.")
+    st.info("👈 Por favor, insira as credenciais na barra lateral para carregar o painel.")
